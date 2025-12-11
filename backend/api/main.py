@@ -14,11 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from ..agent.graph import ProductionAgent
+from ..agent import ProductionAgent
 
 
 class QueryRequest(BaseModel):
     question: str
+    conversation_id: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -56,7 +57,7 @@ async def health() -> Dict[str, str]:
 @app.post("/query")
 async def query(payload: QueryRequest = Body(...)) -> Dict[str, Any]:
     """Non-streaming endpoint for quick answers."""
-    result = await agent.run(payload.question)
+    result = await agent.run(payload.question, thread_id=payload.conversation_id)
     return {
         "answer": result["data"].get("answer"),
         "steps": result["steps"],
@@ -109,13 +110,6 @@ def _extract_question(messages: List[ChatMessage]) -> str:
     return ""
 
 
-def _chunk_text(text: str, size: int = 500) -> List[str]:
-    """Yield reasonably sized chunks for SSE streaming."""
-    if not text:
-        return []
-    return [text[i : i + size] for i in range(0, len(text), size)]
-
-
 conversation_store: Dict[str, Dict[str, Any]] = {}
 
 
@@ -133,6 +127,7 @@ async def chat(payload: ChatRequest = Body(...)):
         raise HTTPException(status_code=400, detail="No user question found.")
 
     message_id = payload.conversation_id or f"msg-{uuid.uuid4().hex}"
+    thread_id = payload.conversation_id or message_id
     text_id = f"txt-{uuid.uuid4().hex}"
 
     async def event_publisher():
@@ -147,9 +142,25 @@ async def chat(payload: ChatRequest = Body(...)):
         }
 
         final_state: Dict[str, Any] | None = None
+        emitted_step_count = 0  # Track emitted steps to avoid duplicates
+        
         try:
-            # Stream intermediate tool steps as readable deltas.
-            async for event in agent.stream(question):
+            # Stream intermediate steps and final answer.
+            async for event in agent.stream(question, thread_id=thread_id):
+                if event["type"] == "answer_chunk":
+                    # Stream answer chunks directly from model
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {"type": "text-delta", "id": text_id, "delta": event["chunk"]}
+                        ),
+                    }
+                    continue
+                
+                if event["type"] == "answer_start" or event["type"] == "answer_end":
+                    # Skip these markers, they're just for internal tracking
+                    continue
+                
                 if event["type"] == "final":
                     final_state = (
                         event.get("result")
@@ -157,28 +168,30 @@ async def chat(payload: ChatRequest = Body(...)):
                         or event.get("data")
                         or {}
                     )
-                    answer = (
-                        final_state.get("data", {}).get("answer")
-                        or "No answer produced."
-                    )
-                    for chunk in _chunk_text(f"\n\nAnswer:\n{answer}"):
-                        yield {
-                            "event": "message",
-                            "data": json.dumps(
-                                {"type": "text-delta", "id": text_id, "delta": chunk}
-                            ),
-                        }
                     continue
+                    
                 if event["type"] == "step":
-                    steps = event["state"].get("steps", [])
-                    if steps:
-                        latest = steps[-1]
-                        yield {
-                            "event": "message",
-                            "data": json.dumps(
-                                {"type": "text-delta", "id": text_id, "delta": f"\n{latest}"}
-                            ),
-                        }
+                    timeline = event["state"].get("timeline", [])
+                    # Only emit new steps
+                    if len(timeline) > emitted_step_count:
+                        for i in range(emitted_step_count, len(timeline)):
+                            step_info = timeline[i]
+                            phase = step_info.get("phase", "processing")
+                            message = step_info.get("message", "Processing...")
+                            # Skip steps that were skipped (don't send to frontend)
+                            if "Skipped" in message or "skipped" in message.lower():
+                                continue
+                            # Send step as tool-call event
+                            yield {
+                                "event": "message",
+                                "data": json.dumps({
+                                    "type": "tool-call",
+                                    "toolCallId": f"step-{i}",
+                                    "toolName": phase,
+                                    "args": {"message": message},
+                                }),
+                            }
+                        emitted_step_count = len(timeline)
 
             # Close the assistant message.
             yield {
@@ -226,6 +239,7 @@ async def chat(payload: ChatRequest = Body(...)):
             conversation_store[message_id] = {
                 "question": question,
                 "final_state": final_state,
+                "thread_id": thread_id,
             }
 
         yield {"data": "[DONE]"}

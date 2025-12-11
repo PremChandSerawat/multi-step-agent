@@ -34,7 +34,8 @@ class MCPToolClient:
                 await session.initialize()
                 self._session = session
                 yield self
-        except Exception:
+        except Exception as exc:
+            print(f"Error connecting to MCP server: {exc}")
             # Fall back to local, but keep API identical for callers.
             yield self
         finally:
@@ -55,7 +56,7 @@ class MCPToolClient:
     async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         """Call a tool by name via MCP or local fallback."""
         arguments = arguments or {}
-
+        print(f"Calling tool: {name} with arguments: {arguments}")
         if self._session:
             result = await self._session.call_tool(name, arguments)
             if hasattr(result, "content") and result.content:

@@ -1,216 +1,641 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Chat, useChat } from "@ai-sdk/react";
+import { useEffect, useRef, useState } from "react";
 import {
   Box,
   Button,
   Chip,
-  Divider,
-  Paper,
-  Stack,
-  TextField,
+  Collapse,
+  InputBase,
   Typography,
+  CircularProgress,
+  IconButton,
 } from "@mui/material";
 import ReactMarkdown from "react-markdown";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import BuildIcon from "@mui/icons-material/Build";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import AddIcon from "@mui/icons-material/Add";
+import SendIcon from "@mui/icons-material/Send";
+import TipsAndUpdatesOutlinedIcon from "@mui/icons-material/TipsAndUpdatesOutlined";
+import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
+import BuildOutlinedIcon from "@mui/icons-material/BuildOutlined";
+import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
+import { useProductionChat, Step } from "@/lib/useProductionChat";
+
+// Step display component - collapsible
+function StepItem({ step, isLast }: { step: Step; isLast: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const formatPhaseName = (phase: string) => {
+    return phase
+      .replace(/_/g, " ")
+      .replace(/([A-Z])/g, " $1")
+      .trim()
+      .split(" ")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  };
+
+  return (
+    <Box
+      sx={{
+        borderRadius: 2,
+        border: "1px solid #27272a",
+        bgcolor: "#18181b",
+        overflow: "hidden",
+        mb: isLast ? 0 : 1,
+      }}
+    >
+      <Box
+        onClick={() => setExpanded(!expanded)}
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1.5,
+          px: 1.5,
+          py: 1,
+          cursor: "pointer",
+          "&:hover": { bgcolor: "#27272a" },
+          transition: "background-color 0.15s",
+        }}
+      >
+        {step.isComplete ? (
+          <CheckCircleOutlineIcon sx={{ fontSize: 16, color: "#22c55e" }} />
+        ) : (
+          <CircularProgress size={16} sx={{ color: "#6b7280" }} />
+        )}
+        <BuildIcon sx={{ fontSize: 14, color: "#6b7280" }} />
+        <Typography
+          sx={{
+            flex: 1,
+            fontWeight: 500,
+            color: "#e5e7eb",
+            fontSize: 13,
+          }}
+        >
+          {step.isComplete
+            ? formatPhaseName(step.phase)
+            : `Running ${formatPhaseName(step.phase)}...`}
+        </Typography>
+        {expanded ? (
+          <ExpandLessIcon sx={{ fontSize: 18, color: "#6b7280" }} />
+        ) : (
+          <ExpandMoreIcon sx={{ fontSize: 18, color: "#6b7280" }} />
+        )}
+      </Box>
+      <Collapse in={expanded}>
+        <Box
+          sx={{
+            borderTop: "1px solid #27272a",
+            px: 1.5,
+            py: 1.25,
+            bgcolor: "#0a0a0a",
+          }}
+        >
+          <Typography sx={{ color: "#9ca3af", fontSize: 13 }}>
+            {step.message}
+          </Typography>
+        </Box>
+      </Collapse>
+    </Box>
+  );
+}
+
+// Quick suggestion chip
+function SuggestionChip({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      onClick={onClick}
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1,
+        px: 2,
+        py: 1,
+        borderRadius: 999,
+        border: "1px solid #3f3f46",
+        bgcolor: "transparent",
+        color: "#9ca3af",
+        textTransform: "none",
+        fontSize: 13,
+        fontWeight: 400,
+        "&:hover": {
+          bgcolor: "#27272a",
+          borderColor: "#52525b",
+        },
+      }}
+    >
+      {icon}
+      {label}
+    </Button>
+  );
+}
 
 export default function Home() {
-  const chat = useMemo(
-    () =>
-      new Chat({
-        // Not typed in this package, but supported at runtime.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        api: "/api/chat",
-      } as any),
-    [],
-  );
-
-  const { messages, sendMessage, status, stop } = useChat({
-    chat,
+  const { messages, status, sendMessage, stop } = useProductionChat({
+    apiEndpoint: "/api/chat",
+    streaming: true,
   });
-  const [input, setInput] = useState("");
 
+  const [input, setInput] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  // Auto-scroll on new messages
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [messages]);
 
-  const renderText = (msg: (typeof messages)[number]) => {
-    if (msg.parts?.length) {
-      return msg.parts
-        .map((part) => (part.type === "text" ? part.text ?? "" : ""))
-        .join("");
-    }
-    if ("content" in msg && typeof msg.content === "string") return msg.content;
-    return "";
+  const isBusy = status === "submitted" || status === "streaming";
+  const hasMessages = messages.length > 0;
+
+  const handleSend = (text: string) => {
+    const value = text.trim();
+    if (!value || isBusy) return;
+    setInput("");
+    void sendMessage(value);
   };
 
-  const isBusy = status === "submitted" || status === "streaming";
+  const suggestions = [
+    {
+      icon: <TipsAndUpdatesOutlinedIcon sx={{ fontSize: 16 }} />,
+      label: "Find current bottleneck?",
+    },
+    {
+      icon: <SpeedOutlinedIcon sx={{ fontSize: 16 }} />,
+      label: "What's today's OEE?",
+    },
+    {
+      icon: <BuildOutlinedIcon sx={{ fontSize: 16 }} />,
+      label: "How to improve throughput?",
+    },
+  ];
 
   return (
     <Box
       sx={{
         minHeight: "100vh",
-        bgcolor: "background.default",
-        color: "text.primary",
+        bgcolor: "#0a0a0a",
+        color: "#ffffff",
         display: "flex",
-        justifyContent: "center",
-        px: { xs: 2, sm: 3 },
-        py: { xs: 3, sm: 4 },
+        flexDirection: "column",
       }}
     >
-      <Stack spacing={2} sx={{ width: "min(1080px, 100%)" }}>
-        <Paper
-          elevation={4}
+      {/* Top bar */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          px: 3,
+          py: 2,
+        }}
+      >
+        <IconButton sx={{ color: "#6b7280" }}>
+          <Box
+            sx={{
+              width: 20,
+              height: 20,
+              border: "1.5px solid #6b7280",
+              borderRadius: 0.5,
+            }}
+          />
+        </IconButton>
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />}
           sx={{
-            p: 2.5,
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 2,
+            bgcolor: "#1f2937",
+            color: "#e5e7eb",
+            textTransform: "none",
+            fontSize: 12,
+            fontWeight: 500,
+            borderRadius: 2,
+            px: 2,
+            "&:hover": { bgcolor: "#374151" },
           }}
         >
-          <Box>
-            <Typography variant="h5" fontWeight={700}>
-              Production AI Copilot
+          Pro Mode
+        </Button>
+      </Box>
+
+      {/* Main content */}
+      <Box
+        sx={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: hasMessages ? "flex-start" : "center",
+          px: 3,
+          pb: 3,
+          overflow: "hidden",
+        }}
+      >
+        {/* Welcome screen */}
+        {!hasMessages && (
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              textAlign: "center",
+              mb: 4,
+            }}
+          >
+            <Box
+              sx={{
+                width: 64,
+                height: 64,
+                borderRadius: 3,
+                bgcolor: "#1f2937",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                mb: 3,
+              }}
+            >
+              <AutoAwesomeIcon sx={{ fontSize: 32, color: "#9ca3af" }} />
+            </Box>
+            <Typography
+              variant="h4"
+              sx={{
+                fontWeight: 500,
+                color: "#ffffff",
+                mb: 1,
+                fontSize: { xs: 24, sm: 32 },
+              }}
+            >
+              Good to See You!
             </Typography>
-            <Typography variant="body2" color="text.secondary" mt={0.5}>
-              LangGraph + OpenAI + Vercel AI SDK. Ask about throughput, OEE, or
-              bottlenecks; reasoning streams live.
+            <Typography
+              variant="h4"
+              sx={{
+                fontWeight: 500,
+                color: "#ffffff",
+                mb: 2,
+                fontSize: { xs: 24, sm: 32 },
+              }}
+            >
+              How Can I be an Assistance?
+            </Typography>
+            <Typography sx={{ color: "#6b7280", fontSize: 14 }}>
+              I&apos;m available 24/7 for you, ask me anything about your
+              production line.
             </Typography>
           </Box>
-          <Chip label="Streaming" color="primary" variant="outlined" />
-        </Paper>
+        )}
 
-        <Paper
-          elevation={6}
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            height: { xs: "70vh", md: "72vh" },
-            overflow: "hidden",
-          }}
-        >
+        {/* Chat messages */}
+        {hasMessages && (
           <Box
             ref={listRef}
             sx={{
               flex: 1,
+              width: "100%",
+              maxWidth: 800,
               overflowY: "auto",
-              p: 2,
               display: "flex",
               flexDirection: "column",
-              gap: 1.5,
-              bgcolor: "background.paper",
+              gap: 3,
+              py: 2,
+              mb: 2,
             }}
           >
-            {messages.length === 0 && (
-              <Typography variant="body2" color="text.secondary">
-                Try: "Where is the current bottleneck and how can we improve
-                OEE?"
-              </Typography>
-            )}
-
             {messages.map((message) => {
-              const text = renderText(message);
               const isUser = message.role === "user";
+              const hasSteps = message.steps.length > 0;
+              const isThinking =
+                message.isStreaming && !message.content && !hasSteps;
+              const hasContent = message.content.trim().length > 0;
+
               return (
-                <Stack
+                <Box
                   key={message.id}
-                  alignItems={isUser ? "flex-end" : "flex-start"}
-                  spacing={0.5}
+                  sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}
                 >
-                  <Typography variant="caption" color="text.secondary">
-                    {isUser ? "You" : "Assistant"}
-                  </Typography>
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      maxWidth: "80%",
-                      bgcolor: isUser ? "primary.main" : "background.default",
-                      color: isUser ? "primary.contrastText" : "text.primary",
-                      px: 2,
-                      py: 1.5,
-                    }}
-                  >
-                    <Typography
-                      variant="body2"
-                      component="div"
+                  {/* Avatar and name */}
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                    <Box
                       sx={{
-                        whiteSpace: "normal",
-                        "& p": { margin: 0 },
+                        width: 36,
+                        height: 36,
+                        borderRadius: 2,
+                        bgcolor: isUser ? "#3b82f6" : "#1f2937",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "#fff",
                       }}
                     >
-                      <ReactMarkdown>{text || "…"}</ReactMarkdown>
+                      {isUser ? (
+                        "You"
+                      ) : (
+                        <AutoAwesomeIcon
+                          sx={{ fontSize: 18, color: "#9ca3af" }}
+                        />
+                      )}
+                    </Box>
+                    <Typography
+                      sx={{ fontWeight: 500, color: "#e5e7eb", fontSize: 14 }}
+                    >
+                      {isUser ? "You" : "AI Assistant"}
                     </Typography>
-                  </Paper>
-                </Stack>
+                    {message.isStreaming && !isUser && (
+                      <Chip
+                        size="small"
+                        label={message.currentAction || (hasSteps ? "Processing..." : "Thinking...")}
+                        sx={{
+                          height: 22,
+                          fontSize: 11,
+                          bgcolor: "rgba(59,130,246,0.15)",
+                          color: "#60a5fa",
+                          border: "none",
+                          maxWidth: 300,
+                          "& .MuiChip-label": {
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          },
+                        }}
+                      />
+                    )}
+                  </Box>
+
+                  {/* Message content */}
+                  <Box sx={{ pl: 6.5 }}>
+                    {/* User message */}
+                    {isUser && (
+                      <Typography
+                        sx={{ color: "#d1d5db", fontSize: 14, lineHeight: 1.7 }}
+                      >
+                        {message.content}
+                      </Typography>
+                    )}
+
+                    {/* Assistant message */}
+                    {!isUser && (
+                      <>
+                        {/* Steps section */}
+                        {hasSteps && (
+                          <Box sx={{ mb: hasContent ? 2 : 0 }}>
+                            <Typography
+                              sx={{
+                                color: "#6b7280",
+                                fontWeight: 500,
+                                fontSize: 12,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                                mb: 1.5,
+                              }}
+                            >
+                              Steps
+                            </Typography>
+                            {message.steps.map((step, idx) => (
+                              <StepItem
+                                key={step.id}
+                                step={step}
+                                isLast={idx === message.steps.length - 1}
+                              />
+                            ))}
+                          </Box>
+                        )}
+
+                        {/* Response content */}
+                        {hasContent && (
+                          <Box>
+                            {hasSteps && (
+                              <Typography
+                                sx={{
+                                  color: "#6b7280",
+                                  fontWeight: 500,
+                                  fontSize: 12,
+                                  textTransform: "uppercase",
+                                  letterSpacing: 0.5,
+                                  mb: 1.5,
+                                }}
+                              >
+                                Response
+                              </Typography>
+                            )}
+                            <Typography
+                              component="div"
+                              sx={{
+                                color: "#d1d5db",
+                                fontSize: 14,
+                                lineHeight: 1.8,
+                                "& p": { margin: 0, mb: 1.5 },
+                                "& p:last-child": { mb: 0 },
+                                "& ul, & ol": {
+                                  pl: 2.5,
+                                  mb: 1.5,
+                                  "& li": { mb: 0.75 },
+                                },
+                                "& strong": { fontWeight: 600, color: "#f3f4f6" },
+                                "& code": {
+                                  bgcolor: "#1f2937",
+                                  px: 0.75,
+                                  py: 0.25,
+                                  borderRadius: 0.5,
+                                  fontSize: "0.9em",
+                                  fontFamily: "monospace",
+                                  color: "#a5f3fc",
+                                },
+                                "& h1, & h2, & h3, & h4": {
+                                  color: "#f9fafb",
+                                  fontWeight: 600,
+                                  mt: 2,
+                                  mb: 1,
+                                },
+                              }}
+                            >
+                              <ReactMarkdown>{message.content}</ReactMarkdown>
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {/* Thinking indicator */}
+                        {isThinking && (
+                          <Box
+                            sx={{ display: "flex", alignItems: "center", gap: 1 }}
+                          >
+                            <CircularProgress
+                              size={14}
+                              sx={{ color: "#6b7280" }}
+                            />
+                            <Typography sx={{ color: "#6b7280", fontSize: 13 }}>
+                              Thinking...
+                            </Typography>
+                          </Box>
+                        )}
+                      </>
+                    )}
+                  </Box>
+                </Box>
               );
             })}
           </Box>
+        )}
 
-          <Divider />
-
-          <Box
-            component="form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const value = input.trim();
-              if (!value) return;
-              setInput("");
-              void sendMessage({ role: "user", content: value } as any);
-            }}
-            sx={{
-              display: "flex",
-              gap: 1,
-              p: 1.5,
-              alignItems: "center",
-            }}
-          >
-            <TextField
-              name="input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about throughput, downtime, or maintenance…"
-              fullWidth
-              size="small"
-              disabled={isBusy}
-            />
-            <Button
-              type="submit"
-              variant="contained"
-              disableElevation
-              disabled={isBusy}
-            >
-              {isBusy ? "Sending..." : "Send"}
-            </Button>
-          </Box>
-
-          {isBusy && (
+        {/* Input area */}
+        <Box
+          sx={{
+            width: "100%",
+            maxWidth: 600,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          {/* Feature bar - only on welcome screen */}
+          {!hasMessages && (
             <Box
               sx={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                px: 2,
-                pb: 1.5,
+                px: 1,
+              }}
+            >
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <AutoAwesomeIcon sx={{ fontSize: 14, color: "#9ca3af" }} />
+                <Typography sx={{ color: "#9ca3af", fontSize: 13 }}>
+                  Production AI Copilot - Powered by LangGraph
+                </Typography>
+              </Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                <FiberManualRecordIcon sx={{ fontSize: 8, color: "#22c55e" }} />
+                <Typography sx={{ color: "#22c55e", fontSize: 12 }}>
+                  Active
+                </Typography>
+              </Box>
+            </Box>
+          )}
+
+          {/* Input field */}
+          <Box
+            component="form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend(input);
+            }}
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              bgcolor: "#18181b",
+              borderRadius: 999,
+              border: "1px solid #27272a",
+              px: 1,
+              py: 0.5,
+            }}
+          >
+            <IconButton sx={{ color: "#6b7280" }}>
+              <AddIcon sx={{ fontSize: 20 }} />
+            </IconButton>
+            <InputBase
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask anything ..."
+              disabled={isBusy}
+              sx={{
+                flex: 1,
+                color: "#e5e7eb",
+                fontSize: 14,
+                "& .MuiInputBase-input": {
+                  p: 0.75,
+                  "&::placeholder": { color: "#6b7280", opacity: 1 },
+                },
+              }}
+            />
+            <IconButton
+              type="submit"
+              disabled={isBusy || !input.trim()}
+              sx={{ color: input.trim() ? "#e5e7eb" : "#4b5563" }}
+            >
+              {isBusy ? (
+                <CircularProgress size={20} sx={{ color: "#6b7280" }} />
+              ) : (
+                <SendIcon sx={{ fontSize: 20 }} />
+              )}
+            </IconButton>
+          </Box>
+
+          {/* Suggestion chips - only on welcome screen */}
+          {!hasMessages && (
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                justifyContent: "center",
+              }}
+            >
+              {suggestions.map((s, idx) => (
+                <SuggestionChip
+                  key={idx}
+                  icon={s.icon}
+                  label={s.label}
+                  onClick={() => handleSend(s.label)}
+                />
+              ))}
+            </Box>
+          )}
+
+          {/* Processing indicator */}
+          {isBusy && (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
                 gap: 2,
               }}
             >
-              <Typography variant="body2" color="text.secondary">
-                Streaming analysis from LangGraph agent…
-              </Typography>
-              <Button variant="outlined" size="small" onClick={stop}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <CircularProgress size={12} sx={{ color: "#6b7280" }} />
+                <Typography sx={{ color: "#6b7280", fontSize: 12 }}>
+                  Processing your request...
+                </Typography>
+              </Box>
+              <Button
+                onClick={stop}
+                sx={{
+                  textTransform: "none",
+                  fontSize: 12,
+                  color: "#ef4444",
+                  minWidth: "auto",
+                  px: 1.5,
+                  "&:hover": { bgcolor: "rgba(239,68,68,0.1)" },
+                }}
+              >
                 Stop
               </Button>
             </Box>
           )}
-        </Paper>
-      </Stack>
+        </Box>
+      </Box>
+
+      {/* Footer */}
+      <Box sx={{ textAlign: "center", py: 2, color: "#6b7280", fontSize: 12 }}>
+        Production AI Copilot powered by LangGraph & OpenAI
+      </Box>
     </Box>
   );
 }
