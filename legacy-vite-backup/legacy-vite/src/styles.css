@@ -73,6 +73,36 @@ button:disabled {
   border-bottom: 1px solid #e5e7eb;
 }
 
+.step-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.step-phase {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.step-body {
+  flex: 1;
+}
+
+.step-message {
+  font-weight: 600;
+}
+
+.step-time {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .answer {
   white-space: pre-wrap;
   background: #0f172a;
@@ -82,4 +112,6 @@ button:disabled {
   font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace;
 }
+
+
 

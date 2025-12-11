@@ -1,14 +1,9 @@
 import { useState } from "react";
-import { runQuery, streamAgent, type StreamEvent } from "./api";
-
-type Step = {
-  node?: string;
-  summary: string;
-};
+import { streamAgent, type StreamEvent, type TimelineEntry } from "./api";
 
 export default function App() {
   const [question, setQuestion] = useState("");
-  const [steps, setSteps] = useState<Step[]>([]);
+  const [steps, setSteps] = useState<TimelineEntry[]>([]);
   const [answer, setAnswer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,35 +22,35 @@ export default function App() {
 
     const close = streamAgent(question, (event: StreamEvent) => {
       if (event.type === "step") {
-        setSteps((prev) => [
-          ...prev,
-          {
-            node: event.node,
-            summary: `Step complete: ${event.node ?? "unknown"}`
-          }
-        ]);
+        const timeline = (event.state?.timeline as TimelineEntry[]) ?? [];
+        if (timeline.length) {
+          setSteps(timeline);
+        } else {
+          setSteps((prev) => [
+            ...prev,
+            {
+              phase: event.phase ?? event.node ?? "step",
+              message: `Step complete: ${event.node ?? "unknown"}`
+            }
+          ]);
+        }
       }
       if (event.type === "final") {
         const finalAnswer =
           (event.result as any)?.data?.answer ??
           "No answer generated. Please try again.";
+        const finalTimeline =
+          ((event.result as any)?.timeline as TimelineEntry[]) ?? [];
+        if (finalTimeline.length) {
+          setSteps(finalTimeline);
+        }
         setAnswer(finalAnswer);
         setLoading(false);
+        close();
       }
     });
 
-    // Fallback to non-streaming in case SSE disconnects early.
-    try {
-      const result = await runQuery(question);
-      if (!answer) {
-        setAnswer(result.answer ?? "No answer generated.");
-      }
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      close();
-      setLoading(false);
-    }
+    // Keep the stream open until we receive the final event.
   };
 
   return (
@@ -85,7 +80,17 @@ export default function App() {
         <ul className="steps">
           {steps.map((step, idx) => (
             <li key={idx}>
-              <strong>{step.node ?? "Step"}</strong> — {step.summary}
+              <div className="step-row">
+                <span className="step-phase">{step.phase ?? "step"}</span>
+                <div className="step-body">
+                  <div className="step-message">{step.message}</div>
+                  {step.timestamp && (
+                    <div className="step-time">
+                      {new Date(step.timestamp).toLocaleTimeString()}
+                    </div>
+                  )}
+                </div>
+              </div>
             </li>
           ))}
           {loading && steps.length === 0 && <li>Preparing agent...</li>}
@@ -99,4 +104,6 @@ export default function App() {
     </div>
   );
 }
+
+
 

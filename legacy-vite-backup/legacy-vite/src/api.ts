@@ -1,20 +1,24 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
-export type StreamEvent =
-  | { type: "step"; node?: string; state: Record<string, unknown> }
-  | { type: "final"; result: Record<string, unknown> };
+export type TimelineEntry = {
+  phase?: string;
+  message: string;
+  timestamp?: string;
+  data_keys?: string[];
+};
 
-export async function runQuery(question: string) {
-  const res = await fetch(`${API_BASE}/query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
-  });
-  if (!res.ok) {
-    throw new Error(`Request failed with status ${res.status}`);
-  }
-  return res.json();
-}
+export type StreamEvent =
+  | {
+      type: "step";
+      node?: string;
+      phase?: string;
+      state: {
+        steps?: string[];
+        data?: Record<string, unknown>;
+        timeline?: TimelineEntry[];
+      };
+    }
+  | { type: "final"; result: Record<string, unknown> };
 
 export function streamAgent(question: string, onEvent: (event: StreamEvent) => void) {
   const source = new EventSource(
@@ -37,4 +41,6 @@ export function streamAgent(question: string, onEvent: (event: StreamEvent) => v
 
   return () => source.close();
 }
+
+
 
