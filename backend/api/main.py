@@ -4,6 +4,7 @@ FastAPI backend providing query and SSE streaming endpoints.
 from __future__ import annotations
 
 import json
+import traceback
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
@@ -215,7 +216,8 @@ async def chat(payload: ChatRequest = Body(...)):
                     }
                 ),
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
+            print(f"Traceback----------: {traceback.format_exc()}")
             yield {
                 "event": "message",
                 "data": json.dumps(

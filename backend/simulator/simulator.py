@@ -310,24 +310,42 @@ class ProductionLineSimulator:
             "quality": quality * 100,
         }
 
-    def find_bottleneck(self) -> Dict:
-        """Identify the production bottleneck."""
-        running_stations = [
-            s for s in self.stations.values() if s.status == "running"
-        ]
-        if not running_stations:
+    def find_bottleneck(self, stations: List[str] = None) -> Dict:
+        """Identify the production bottleneck.
+        
+        Args:
+            stations: Optional list of station IDs to analyze. 
+                      If not provided, defaults to all running stations.
+        """
+        print(f"Stations----------: {stations}")
+        if stations is not None:
+            # Use provided station IDs
+            station_list = [
+                self.stations[sid] for sid in stations if sid in self.stations
+            ]
+        else:
+            # Default to all running stations
+            station_list = [
+                s for s in self.stations.values() if s.status == "running"
+            ]
+        
+        if not station_list:
             return {"bottleneck": "No running stations", "throughput": 0}
 
-        bottleneck = min(running_stations, key=lambda s: s.throughput)
-        return {
+        bottleneck = min(station_list, key=lambda s: s.throughput)
+        result = {
             "bottleneck_station_id": bottleneck.id,
             "bottleneck_station_name": bottleneck.name,
             "throughput": bottleneck.throughput,
             "efficiency": bottleneck.efficiency,
+            "status": bottleneck.status,
             "recommendation": (
                 f"Optimize {bottleneck.name} to improve overall throughput"
             ),
         }
+
+        print(f"Result----------: {result}")
+        return result
 
     def get_stations_by_status(self, status: str) -> List[Dict]:
         """Get all stations with a specific status."""

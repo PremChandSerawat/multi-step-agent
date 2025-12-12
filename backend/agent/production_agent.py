@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from openai import AsyncOpenAI
 
 from .graph_builder import build_agent_graph
+from .logging import AgentLogger, create_logger, set_logger
 from .memory import ConversationMemory
 from .observability import LangfuseObservability
 from .prompts import build_synthesis_messages
@@ -118,6 +119,15 @@ class ProductionAgent:
         except Exception as exc:  # noqa: BLE001
             print(f"Memory persistence failed: {exc}")
 
+    def _get_model_params(self, max_tokens: int) -> Dict[str, Any]:
+        """Get the appropriate max tokens parameter based on model type."""
+        # Newer models (o1, o3, gpt-4.5, gpt-5) use max_completion_tokens
+        # Older models (gpt-4, gpt-3.5) use max_tokens
+        model_lower = self.model.lower()
+        if any(m in model_lower for m in ["o1", "o3", "gpt-4.5", "gpt-5", "chatgpt-4o"]):
+            return {"max_completion_tokens": max_tokens}
+        return {"max_tokens": max_tokens}
+
     async def _call_model(
         self, messages: List[Dict[str, str]], max_tokens: int = 400, stream: bool = False
     ) -> str:
@@ -125,13 +135,15 @@ class ProductionAgent:
         if not self.openai_client:
             raise RuntimeError("OpenAI client not configured (missing OPENAI_API_KEY).")
 
+        token_params = self._get_model_params(max_tokens)
+
         if stream:
             response_stream = await self.openai_client.chat.completions.create(
                 model=self.model,
                 temperature=self.temperature,
                 stream=True,
-                max_tokens=max_tokens,
                 messages=messages,
+                **token_params,
             )
             collected_content = []
             async for chunk in response_stream:
@@ -143,8 +155,8 @@ class ProductionAgent:
             model=self.model,
             temperature=self.temperature,
             stream=False,
-            max_tokens=max_tokens,
             messages=messages,
+            **token_params,
         )
         return response.choices[0].message.content or ""
 
@@ -153,11 +165,13 @@ class ProductionAgent:
         if not self.openai_client:
             raise RuntimeError("OpenAI client not configured (missing OPENAI_API_KEY).")
 
+        token_params = self._get_model_params(max_tokens)
         response_stream = await self.openai_client.chat.completions.create(
             model=self.model,
             temperature=self.temperature,
             stream=True,
             messages=messages,
+            **token_params,
         )
         async for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta.content:
@@ -208,9 +222,17 @@ class ProductionAgent:
 
         Yields dictionaries shaped for EventSourceResponse.
         """
-        print(f"Streaming agent for question: {question}")
+        print(f"\n{'='*60}")
+        print(f"AGENT REQUEST: {question}")
+        print(f"{'='*60}")
+        
         initial_state = create_initial_state(question, thread_id)
         thread_key = initial_state["thread_id"]
+        
+        # Create and set logger for this request
+        logger = create_logger(thread_key, log_to_console=True)
+        logger.phase_start("agent_request", {"question": question, "thread_id": thread_key})
+        
         trace_id = self.observability.trace_id(thread_key)
         final_state: AgentState | None = None
         last_step_count = 0
@@ -228,8 +250,11 @@ class ProductionAgent:
 
                 if isinstance(raw_state, dict) and "finalize" in raw_state and isinstance(raw_state["finalize"], dict):
                     current_state = raw_state["finalize"]
-                else:
+                elif isinstance(raw_state, dict):
                     current_state = raw_state
+                else:
+                    # Skip non-dict states (e.g., strings)
+                    continue
 
                 steps = current_state.get("steps", [])
                 if steps and len(steps) > last_step_count:
@@ -255,33 +280,58 @@ class ProductionAgent:
                     final_state = current_state
 
         if final_state:
+            # Ensure final_state is a dict
+            if not isinstance(final_state, dict):
+                final_state = {"question": question, "data": {}, "timeline": [], "steps": []}
+            
             yield {"type": "answer_start"}
             memory_context = self._format_memory_context(thread_key)
-            messages = build_synthesis_messages(final_state, memory_context)
+            try:
+                messages = build_synthesis_messages(final_state, memory_context)
+            except Exception as msg_exc:
+                print(f"Error building synthesis messages: {msg_exc}")
+                # Fallback to simple prompt
+                messages = [
+                    {"role": "system", "content": "You are a helpful production assistant."},
+                    {"role": "user", "content": question}
+                ]
+            
             full_answer = ""
             try:
+                state_question = final_state.get("question", question) if isinstance(final_state, dict) else question
                 with self.observability.span(
                     "synthesis-stream",
                     trace_id=trace_id,
-                    input_data=final_state.get("question", question),
+                    input_data=state_question,
                     metadata={"stage": "synthesis"},
                 ):
                     async for chunk in self._stream_model(messages):
                         full_answer += chunk
                         yield {"type": "answer_chunk", "chunk": chunk}
-                    if final_state.get("timeline"):
-                        final_state["timeline"][-1]["message"] = "Response complete"
+                    timeline = final_state.get("timeline") if isinstance(final_state, dict) else None
+                    if timeline and isinstance(timeline, list) and len(timeline) > 0:
+                        timeline[-1]["message"] = "Response complete"
             except Exception as exc:  # noqa: BLE001
                 error_msg = f"Unable to generate response: {exc}"
                 yield {"type": "answer_chunk", "chunk": error_msg}
                 full_answer = error_msg
-                if final_state.get("timeline"):
-                    final_state["timeline"][-1]["message"] = "Response failed"
+                timeline = final_state.get("timeline") if isinstance(final_state, dict) else None
+                if timeline and isinstance(timeline, list) and len(timeline) > 0:
+                    timeline[-1]["message"] = "Response failed"
             yield {"type": "answer_end"}
 
-            final_state["data"]["answer"] = full_answer
+            # Safely update the answer
+            if isinstance(final_state, dict):
+                if "data" not in final_state or not isinstance(final_state.get("data"), dict):
+                    final_state["data"] = {}
+                final_state["data"]["answer"] = full_answer
             try:
                 await self._persist_turn(thread_key, question, full_answer)
             except Exception:
                 pass
+            
+            # Log completion and print summary
+            logger.phase_end("agent_request", {"success": True, "answer_length": len(full_answer)})
+            logger.print_summary()
+            
             yield {"type": "final", "result": final_state}

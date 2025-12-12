@@ -2,11 +2,37 @@ import { Box, Chip, Typography } from "@mui/material";
 import { keyframes } from "@emotion/react";
 import { alpha, useTheme } from "@mui/material/styles";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import SecurityIcon from "@mui/icons-material/Security";
+import PsychologyIcon from "@mui/icons-material/Psychology";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import FactCheckIcon from "@mui/icons-material/FactCheck";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import BuildIcon from "@mui/icons-material/Build";
 
 import { Step } from "@/lib/useProductionChat";
 
-export function formatPhaseName(phase: string) {
+// Phase display names and icons mapping
+const PHASE_CONFIG: Record<string, { label: string; Icon: React.ElementType }> = {
+  validation: { label: "Input Validation", Icon: SecurityIcon },
+  understanding: { label: "Understanding", Icon: PsychologyIcon },
+  planning: { label: "Planning", Icon: AccountTreeIcon },
+  execution: { label: "Execution", Icon: PlayArrowIcon },
+  output_validation: { label: "Result Validation", Icon: FactCheckIcon },
+  synthesis: { label: "Synthesis", Icon: AutoAwesomeIcon },
+  // Legacy phases
+  understand: { label: "Understanding", Icon: PsychologyIcon },
+  tools: { label: "Tool Execution", Icon: BuildIcon },
+};
+
+export function formatPhaseName(phase: string): string {
+  // Check for known phases first
+  const config = PHASE_CONFIG[phase.toLowerCase()];
+  if (config) {
+    return config.label;
+  }
+  
+  // Fallback: convert snake_case/camelCase to Title Case
   return phase
     .replace(/_/g, " ")
     .replace(/([A-Z])/g, " $1")
@@ -14,6 +40,11 @@ export function formatPhaseName(phase: string) {
     .split(" ")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
+}
+
+function getPhaseIcon(phase: string): React.ElementType {
+  const config = PHASE_CONFIG[phase.toLowerCase()];
+  return config?.Icon || BuildIcon;
 }
 
 const pulse = keyframes`
@@ -61,6 +92,8 @@ export function StepItem({ step, isLast, isActive = false }: StepItemProps) {
     ? theme.palette.success.main
     : theme.palette.warning.main;
 
+  const PhaseIcon = getPhaseIcon(step.phase);
+
   return (
     <Box
       sx={{
@@ -99,7 +132,7 @@ export function StepItem({ step, isLast, isActive = false }: StepItemProps) {
             }}
           />
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-            <BuildIcon sx={{ fontSize: 14, color: "text.secondary" }} />
+            <PhaseIcon sx={{ fontSize: 14, color: "text.secondary" }} />
             <Typography
               sx={{
                 fontWeight: 600,
@@ -145,4 +178,3 @@ export function StepItem({ step, isLast, isActive = false }: StepItemProps) {
     </Box>
   );
 }
-
