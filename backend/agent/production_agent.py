@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 
 from .graph_builder import build_agent_graph
 from .memory import ConversationMemory
+from .observability import LangfuseObservability
 from .prompts import build_synthesis_messages
 from .state import AgentState, create_initial_state
 from .tools import MCPToolClient
@@ -31,6 +32,7 @@ class ProductionAgent:
         self.temperature = temperature
         self.openai_client = openai_client or (AsyncOpenAI(api_key=api_key) if api_key else None)
         self.memory = memory or ConversationMemory(summary_interval=summary_interval)
+        self.observability = LangfuseObservability()
         self.graph = build_agent_graph(self)
 
     # --- Helpers ---------------------------------------------------------
@@ -64,11 +66,22 @@ class ProductionAgent:
         recent = (context or {}).get("recent") or []
         if recent:
             lines.append("Recent turns:")
+            # Dynamically budget space so recent turns fit comfortably alongside the summary.
+            max_total_recent_chars = 4000
+            # Spread a shared budget across turns to avoid over-trimming single messages.
+            per_turn_budget = max(400, max_total_recent_chars // max(1, len(recent)))
             for item in recent:
                 role = item.get("role", "user")
                 content = item.get("content", "")
-                trimmed = content if len(content) <= 320 else f"{content[:320]}..."
-                lines.append(f"- {role}: {trimmed}")
+                if len(content) <= per_turn_budget:
+                    rendered = content
+                else:
+                    # Keep head/tail to preserve intent while flagging how much was removed.
+                    head = content[: int(per_turn_budget * 0.6)]
+                    tail = content[-max(120, int(per_turn_budget * 0.4)) :]
+                    trimmed_len = len(content) - len(head) - len(tail)
+                    rendered = f"{head} ... [trimmed {trimmed_len} chars] ... {tail}"
+                lines.append(f"- {role}: {rendered}")
 
         return "\n".join(lines).strip()
 
@@ -156,13 +169,22 @@ class ProductionAgent:
         initial_state = create_initial_state(question, thread_id)
         thread_key = initial_state["thread_id"]
 
+        graph_config = self.observability.graph_config(thread_key, run_name="agent-run")
+        invoke_kwargs = {"config": graph_config} if graph_config else {}
         async with self.tool_client.connect():
-            state = await self.graph.ainvoke(initial_state)
+            state = await self.graph.ainvoke(initial_state, **invoke_kwargs)
 
         try:
             memory_context = self._format_memory_context(thread_key)
             messages = build_synthesis_messages(state, memory_context)
-            answer = await self._call_model(messages)
+            trace_id = self.observability.trace_id(thread_key)
+            with self.observability.span(
+                "synthesis",
+                trace_id=trace_id,
+                input_data=state["question"],
+                metadata={"stage": "synthesis"},
+            ):
+                answer = await self._call_model(messages)
             if not answer or not answer.strip():
                 answer = "Happy to help. Could you share a bit more detail?"
             state["data"]["answer"] = answer
@@ -189,11 +211,14 @@ class ProductionAgent:
         print(f"Streaming agent for question: {question}")
         initial_state = create_initial_state(question, thread_id)
         thread_key = initial_state["thread_id"]
+        trace_id = self.observability.trace_id(thread_key)
         final_state: AgentState | None = None
         last_step_count = 0
 
+        stream_config = self.observability.graph_config(thread_key, run_name="agent-stream")
+        stream_kwargs = {"config": stream_config} if stream_config else {}
         async with self.tool_client.connect():
-            async for event in self.graph.astream_events(initial_state, version="v1"):
+            async for event in self.graph.astream_events(initial_state, version="v1", **stream_kwargs):
                 raw_state = (
                     event["data"].get("state")
                     or event["data"].get("output")
@@ -235,11 +260,17 @@ class ProductionAgent:
             messages = build_synthesis_messages(final_state, memory_context)
             full_answer = ""
             try:
-                async for chunk in self._stream_model(messages):
-                    full_answer += chunk
-                    yield {"type": "answer_chunk", "chunk": chunk}
-                if final_state.get("timeline"):
-                    final_state["timeline"][-1]["message"] = "Response complete"
+                with self.observability.span(
+                    "synthesis-stream",
+                    trace_id=trace_id,
+                    input_data=final_state.get("question", question),
+                    metadata={"stage": "synthesis"},
+                ):
+                    async for chunk in self._stream_model(messages):
+                        full_answer += chunk
+                        yield {"type": "answer_chunk", "chunk": chunk}
+                    if final_state.get("timeline"):
+                        final_state["timeline"][-1]["message"] = "Response complete"
             except Exception as exc:  # noqa: BLE001
                 error_msg = f"Unable to generate response: {exc}"
                 yield {"type": "answer_chunk", "chunk": error_msg}

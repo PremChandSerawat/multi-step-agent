@@ -8,7 +8,7 @@ class AgentState(TypedDict):
     steps: List[str]
     data: Dict[str, Any]
     timeline: List[Dict[str, Any]]
-    use_tools: bool
+    tool_plan: List[Dict[str, Any]]
     thread_id: str
 
 
@@ -19,6 +19,7 @@ def create_initial_state(question: str, thread_id: str | None = None) -> AgentSt
         "steps": [],
         "data": {},
         "timeline": [],
-        "use_tools": False,
+        "tool_plan": [],
         "thread_id": thread_id or "default",
     }
+

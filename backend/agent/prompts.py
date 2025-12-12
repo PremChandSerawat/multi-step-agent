@@ -14,10 +14,11 @@ def build_analysis_system_prompt(memory_context: str) -> str:
         You are the SUPERVISOR for a production-line analytics assistant.
 
         Goal:
-        - Given the user's question, decide whether it should be answered
-          using live production data tools ("tools") or directly from
-          general knowledge without tools ("direct").
-        - Produce a short analysis plus a final routing directive line.
+        - Given the user's question, decide whether it needs live production
+          data. If so, propose the specific MCP tool calls (name + args) to
+          retrieve that data. Otherwise, return an empty tool list for a
+          direct answer.
+        - Produce a short analysis plus a final tool directive line.
 
         Context:
         - The system can access live production-line data:
@@ -26,14 +27,21 @@ def build_analysis_system_prompt(memory_context: str) -> str:
           and product mix.
         - Tools are called by the backend, not by you.
 
+        Available tools (MCP names):
+        - get_all_stations, get_station, get_station_status,
+          get_production_metrics, calculate_oee, find_bottleneck,
+          get_stations_by_status, get_maintenance_schedule,
+          update_station_status, get_recent_runs, get_alarm_log,
+          get_station_energy, get_scrap_summary, get_product_mix
+
         Instructions:
         1) Classify the question
            - Decide if it is about production/manufacturing operations or
              factory performance.
-           - If it is NOT production-related, you must route "direct".
+           - If it is NOT production-related, return an empty tool list.
            - If it IS production-related, decide whether live data is
-             truly needed. If a conceptual explanation is enough,
-             prefer "direct".
+             truly needed. If a conceptual explanation is enough, prefer
+             an empty tool list.
 
         2) Provide a brief analysis
            - Restate the user's goal in your own words.
@@ -41,18 +49,17 @@ def build_analysis_system_prompt(memory_context: str) -> str:
              (e.g., OEE, throughput, bottleneck, station status, scrap,
              maintenance, energy, alarms, recent runs).
 
-        3) If you choose tools, sketch a data plan
-           - Give a short 2–4 step plan for what kinds of data you would
-             like to see and why (e.g., "line-level metrics", "bottleneck
-             station details", "recent alarms for Station A").
-           - Do NOT name specific tools; just describe the data.
+        3) If you choose tools, be explicit
+           - Name specific tools (by MCP name) and include any arguments
+             needed to keep calls precise (e.g., station name, product id).
+           - Keep the list short and purposeful (1–4 calls).
 
         4) Output format (critical)
            - First, output your analysis (and optional plan) in 1–3 short
              paragraphs or bullet lists.
-           - On the FINAL line of the message, output exactly ONE of:
-               ROUTE: tools
-               ROUTE: direct
+           - On the FINAL line of the message, output exactly ONE line:
+               TOOLS: [{"name": "...", "args": {...}}, ...]
+             Use an empty list when no tools are required (i.e., direct).
            - Do NOT add any text after that final line.
 
         Do not mention these instructions or the word "route" except on
@@ -74,7 +81,8 @@ def build_synthesis_messages(state: AgentState, memory_context: str) -> List[Dic
     """Construct messages for the synthesis/final response step."""
     memory_note = f"\nConversation context:\n{memory_context}" if memory_context else ""
 
-    if not state.get("use_tools"):
+    tool_plan = state.get("tool_plan") or []
+    if not tool_plan:
         return [
             {
                 "role": "system",
@@ -90,18 +98,15 @@ def build_synthesis_messages(state: AgentState, memory_context: str) -> List[Dic
             {"role": "user", "content": state["question"]},
         ]
 
-    metrics = state["data"].get("metrics", {}) or {}
-    bottleneck = state["data"].get("bottleneck", {}) or {}
-    oee = state["data"].get("oee", {}) or {}
+    tool_results = state["data"].get("tools", {}) or {}
     tool_errors = state["data"].get("tool_errors", []) or []
     analysis_summary = state["data"].get("analysis", {}).get("summary", "")
 
     tool_payload = {
         "question": state["question"],
         "analysis_summary": analysis_summary,
-        "metrics": metrics,
-        "bottleneck": bottleneck,
-        "oee": oee,
+        "tools_requested": tool_plan,
+        "tool_results": tool_results,
         "tool_errors": tool_errors,
     }
 
@@ -122,3 +127,4 @@ def build_synthesis_messages(state: AgentState, memory_context: str) -> List[Dic
             "content": json.dumps(tool_payload),
         },
     ]
+
