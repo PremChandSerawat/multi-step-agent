@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+.env
+backend/.env
+backend/data/
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+frontend/dist/
+build/
+coverage/
+
+# Editor / tooling
+.cursor/
+.vscode/
+.idea/
+
+
+.npm-cache/

@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    image: multi-agent:latest
+    ports:
+      - "3001:3000"  # host:container (use 3000 if free)
+      - "8001:8000"  # host:container (use 8000 if free)
+    # Optional env vars; override via shell exports or a local .env
+    environment:
+      NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://localhost:8000}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
+      LANGFUSE_BASE_URL: "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
+    restart: unless-stopped

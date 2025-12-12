@@ -37,14 +37,16 @@ python -m backend.mcp_server
 ```bash
 cd frontend
 npm install
-npm run dev -- --host --port 5173
+npm run dev
+# open http://localhost:3000
 ```
 
-Set `VITE_API_BASE` to point to the backend if not on `http://localhost:8000`.
+Set `NEXT_PUBLIC_API_BASE` to point to the backend if not on `http://localhost:8000`.
 
 ## API
 - `POST /query` body `{ "question": "..." }` → returns `answer`, `steps`, and raw `data`.
-- `GET /stream?question=...` → SSE stream of `step` and `final` events.
+- `GET /stream?question=...` → SSE stream of `step` and `final` events (tool-by-tool).
+- `POST /chat` body `{ "messages": [...] }` → AI SDK UI stream protocol for the chat frontend (SSE).
 - `GET /health` → liveness check.
 
 ## Notes
