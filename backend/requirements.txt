@@ -5,7 +5,7 @@ langgraph>=0.3.0
 langsmith>=0.1.0
 langchain-core>=1.0.0
 mcp==1.23.3
-openai==1.51.0
+openai>=1.60.0
 pydantic==2.11.4
 typing_extensions>=4.12.2
 python-dotenv==1.0.1
