@@ -103,3 +103,4 @@ def validate_tool_args(tool_name: str, raw_args: Dict[str, Any] | None) -> Tuple
         return _validate(model_cls, raw_args), None
     except ValidationError as exc:
         return None, exc.json()
+

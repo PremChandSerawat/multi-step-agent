@@ -11,7 +11,8 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://localhost:8000}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
-      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
-      LANGFUSE_BASE_URL: "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
+      LANGSMITH_TRACING: "${LANGSMITH_TRACING:-true}"
+      LANGSMITH_API_KEY: "${LANGSMITH_API_KEY:-}"
+      LANGSMITH_PROJECT: "${LANGSMITH_PROJECT:-multi-agent}"
+      LANGSMITH_HUB_OWNER: "${LANGSMITH_HUB_OWNER:-}"
     restart: unless-stopped

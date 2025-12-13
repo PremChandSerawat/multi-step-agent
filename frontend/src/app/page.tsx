@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { Box } from "@mui/material";
 import TipsAndUpdatesOutlinedIcon from "@mui/icons-material/TipsAndUpdatesOutlined";
 import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
@@ -13,14 +13,23 @@ import { MessageList } from "@/components/MessageList";
 import { ChatInput } from "@/components/ChatInput";
 
 export default function Home() {
-  const { messages, status, sendMessage } = useProductionChat({
-    apiEndpoint: "/api/chat",
-    streaming: true,
-  });
+  const [syncMode, setSyncMode] = useState(false);
+  
+  const chatOptions = useMemo(() => ({
+    apiEndpoint: syncMode ? "/api/chat/sync" : "/api/chat",
+    streaming: !syncMode,
+  }), [syncMode]);
+  
+  const { messages, status, sendMessage, reset } = useProductionChat(chatOptions);
 
   const [input, setInput] = useState("");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
+  
+  const handleSyncModeToggle = () => {
+    setSyncMode((prev) => !prev);
+    reset(); // Clear messages when switching modes
+  };
 
   // Scroll only when a new message is added (not on streaming chunks)
   useEffect(() => {
@@ -71,7 +80,7 @@ export default function Home() {
         flexDirection: "column",
       }}
     >
-      <TopBar />
+      <TopBar syncMode={syncMode} onSyncModeToggle={handleSyncModeToggle} />
 
       <Box
         ref={scrollContainerRef}

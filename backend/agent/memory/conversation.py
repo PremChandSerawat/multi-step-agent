@@ -121,3 +121,4 @@ class ConversationMemory:
             "summary": self.get_summary(thread_id),
             "recent": self.get_recent(thread_id, limit=limit),
         }
+

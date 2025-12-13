@@ -61,7 +61,7 @@ const dotBlink = keyframes`
 
 export function DotPulse() {
   return (
-    <Box sx={{ display: "inline-flex", gap: 0.4 }}>
+    <Box component="span" sx={{ display: "inline-flex", gap: 0.4 }}>
       {[0, 1, 2].map((i) => (
         <Box
           key={i}

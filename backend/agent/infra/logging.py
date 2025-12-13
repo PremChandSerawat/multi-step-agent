@@ -418,4 +418,3 @@ def create_logger(thread_id: str, **kwargs) -> AgentLogger:
     set_logger(logger)
     return logger
 
-

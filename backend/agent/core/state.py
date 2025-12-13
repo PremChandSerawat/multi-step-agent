@@ -120,3 +120,4 @@ def create_initial_state(question: str, thread_id: str | None = None) -> AgentSt
         "current_phase": "input_validation",
         "error": "",
     }
+

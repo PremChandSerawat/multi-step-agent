@@ -2,9 +2,16 @@ import { Box, Button, IconButton, Tooltip, useTheme } from "@mui/material";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
+import StreamIcon from "@mui/icons-material/Stream";
+import SyncIcon from "@mui/icons-material/Sync";
 import { useColorMode } from "@/theme/ThemeProvider";
 
-export function TopBar() {
+interface TopBarProps {
+  syncMode?: boolean;
+  onSyncModeToggle?: () => void;
+}
+
+export function TopBar({ syncMode = false, onSyncModeToggle }: TopBarProps) {
   const theme = useTheme();
   const { mode, toggle } = useColorMode();
 
@@ -31,20 +38,33 @@ export function TopBar() {
           }}
         />
       </IconButton>
-      <Button
-        variant="outlined"
-        size="small"
-        startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />}
-        sx={{
-          textTransform: "none",
-          fontSize: 12,
-          fontWeight: 600,
-          borderRadius: 2,
-          px: 2,
-        }}
-      >
-        Pro Mode
-      </Button>
+      
+      <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+        <Tooltip title={syncMode ? "Switch to streaming mode" : "Switch to sync mode"}>
+          <Button
+            variant={syncMode ? "contained" : "outlined"}
+            size="small"
+            onClick={onSyncModeToggle}
+            startIcon={syncMode ? <SyncIcon sx={{ fontSize: 14 }} /> : <StreamIcon sx={{ fontSize: 14 }} />}
+            sx={{
+              textTransform: "none",
+              fontSize: 12,
+              fontWeight: 600,
+              borderRadius: 2,
+              px: 2,
+              bgcolor: syncMode ? "primary.main" : "transparent",
+              color: syncMode ? "primary.contrastText" : "text.primary",
+              borderColor: syncMode ? "primary.main" : "divider",
+              "&:hover": {
+                bgcolor: syncMode ? "primary.dark" : theme.palette.action.hover,
+              },
+            }}
+          >
+            {syncMode ? "Sync" : "Stream"}
+          </Button>
+        </Tooltip>
+      </Box>
+      
       <Tooltip
         title={mode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
       >
