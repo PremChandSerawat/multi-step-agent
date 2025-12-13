@@ -62,3 +62,4 @@ class HealthResponse(BaseModel):
     version: str = Field(default="0.1.0", description="API version")
 
 
+

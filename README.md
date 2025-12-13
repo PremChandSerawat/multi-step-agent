@@ -33,6 +33,12 @@ An intelligent AI assistant for manufacturing operations, built with a **LangGra
 - [Observability](#observability)
 - [Docker Deployment](#docker-deployment)
 - [Configuration](#configuration)
+- [API Examples](#api-examples)
+- [Testing](#testing)
+- [Security Considerations](#security-considerations)
+- [Demo](#demo)
+- [Roadmap](#roadmap)
+- [Acknowledgments](#acknowledgments)
 
 ---
 
@@ -798,6 +804,338 @@ The production simulator generates synthetic data inspired by manufacturing data
 - **Alarms**: Vision misalignment, label contrast, temperature drift
 - **Energy**: kWh snapshots per station
 - **OEE**: Availability × Performance × Quality
+
+---
+
+## API Examples
+
+### cURL Examples
+
+**Health Check:**
+
+```bash
+curl http://localhost:8000/health
+```
+
+**Chat Request (Streaming):**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "What is the current OEE for station ST001?"}],
+    "conversation_id": "test-session-123"
+  }'
+```
+
+**Chat with Context (Multi-turn):**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Show me all stations"},
+      {"role": "assistant", "content": "Here are all 5 production stations..."},
+      {"role": "user", "content": "Which one has the lowest efficiency?"}
+    ],
+    "conversation_id": "test-session-123"
+  }'
+```
+
+### JavaScript/TypeScript Examples
+
+**Using Fetch with SSE:**
+
+```typescript
+const response = await fetch('/api/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    messages: [{ role: 'user', content: 'Find the bottleneck station' }],
+    conversation_id: crypto.randomUUID()
+  })
+});
+
+const reader = response.body?.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader!.read();
+  if (done) break;
+  
+  const chunk = decoder.decode(value);
+  const lines = chunk.split('\n').filter(line => line.startsWith('data:'));
+  
+  for (const line of lines) {
+    const data = JSON.parse(line.slice(5));
+    if (data.type === 'text-delta') {
+      process.stdout.write(data.textDelta);
+    }
+  }
+}
+```
+
+**Using the React Hook:**
+
+```tsx
+import { useProductionChat } from '@/lib/useProductionChat';
+
+function ChatComponent() {
+  const { messages, status, sendMessage, reset } = useProductionChat({
+    apiEndpoint: '/api/chat',
+    streaming: true,
+  });
+
+  const handleSubmit = (query: string) => {
+    sendMessage({ role: 'user', content: query });
+  };
+
+  return (
+    <div>
+      {messages.map((msg, i) => (
+        <div key={i} className={msg.role}>
+          {msg.content}
+        </div>
+      ))}
+      {status === 'loading' && <div>Thinking...</div>}
+    </div>
+  );
+}
+```
+
+### Python Examples
+
+**Synchronous Request:**
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/chat",
+    json={
+        "messages": [{"role": "user", "content": "Get maintenance schedule"}],
+        "conversation_id": "python-session"
+    },
+    stream=True
+)
+
+for line in response.iter_lines():
+    if line.startswith(b"data:"):
+        print(line.decode())
+```
+
+**Async with httpx:**
+
+```python
+import httpx
+import asyncio
+
+async def chat():
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            "http://localhost:8000/chat",
+            json={"messages": [{"role": "user", "content": "Show alarms"}]}
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data:"):
+                    print(line)
+
+asyncio.run(chat())
+```
+
+---
+
+## Testing
+
+### Running Backend Tests
+
+```bash
+cd backend
+python -m pytest tests/ -v
+```
+
+### Running Frontend Tests
+
+```bash
+cd frontend
+npm test
+```
+
+### Manual Testing
+
+**Test the Agent Directly:**
+
+```python
+# In Python REPL or script
+import asyncio
+from backend.agent.agent import ProductionAgent
+
+async def test_agent():
+    agent = ProductionAgent()
+    
+    async for event in agent.run("What is the OEE for ST001?", thread_id="test"):
+        print(event)
+
+asyncio.run(test_agent())
+```
+
+**Test MCP Tools:**
+
+```bash
+# List available tools
+python -c "from backend.mcp_client.client import MCPToolClient; import asyncio; asyncio.run(MCPToolClient().list_tools())"
+```
+
+### Example Queries to Test
+
+| Query | Expected Behavior |
+|-------|-------------------|
+| "Show all stations" | Returns 5 stations with status |
+| "What's the OEE for ST001?" | Calculates OEE metrics |
+| "Find the bottleneck" | Identifies lowest-performing station |
+| "Show recent alarms" | Lists alarm log entries |
+| "What's the energy consumption for ST003?" | Returns kWh data |
+| "Hello, how are you?" | Polite off-topic response |
+| "DROP TABLE users" | Rejected as unsafe input |
+
+---
+
+## Security Considerations
+
+### Input Validation
+
+The agent validates all user input in Phase 1:
+
+- **Safety checks**: Detects injection attempts, harmful content
+- **Relevance filtering**: Rejects off-topic queries gracefully
+- **Sanitization**: All inputs are sanitized before processing
+
+### API Security
+
+| Concern | Mitigation |
+|---------|------------|
+| **Authentication** | Add API key middleware (not included by default) |
+| **Rate Limiting** | Implement with FastAPI middleware or reverse proxy |
+| **CORS** | Configured in `api/main.py` for allowed origins |
+| **Input Size** | Request body limits in FastAPI |
+
+### Environment Variables
+
+- Never commit `.env` files to version control
+- Use secrets management in production (AWS Secrets Manager, Vault, etc.)
+- Rotate API keys periodically
+
+### Production Recommendations
+
+1. **Use HTTPS** - Deploy behind a TLS-terminating reverse proxy
+2. **Add Authentication** - Implement JWT or API key validation
+3. **Enable Rate Limiting** - Prevent abuse with request throttling
+4. **Log & Monitor** - Use LangSmith tracing + application logging
+5. **Validate Origins** - Restrict CORS to known frontends
+
+---
+
+## Demo
+
+### Sample Conversation
+
+```
+User: What's the current status of all production stations?
+
+Agent: Here's the current status of all 5 production stations:
+
+| Station | Name | Status | Efficiency |
+|---------|------|--------|------------|
+| ST001 | Assembly Station 1 | Running | 87.3% |
+| ST002 | Assembly Station 2 | Running | 82.1% |
+| ST003 | Quality Check | Idle | 91.5% |
+| ST004 | Packaging Station | Running | 78.9% |
+| ST005 | Testing Station | Maintenance | 0% |
+
+📊 **Summary**: 3 stations running, 1 idle, 1 under maintenance.
+⚠️ **Alert**: ST005 is currently down for maintenance.
+```
+
+```
+User: Which station is the bottleneck?
+
+Agent: Based on current metrics, **ST004 (Packaging Station)** is the 
+bottleneck with the lowest throughput efficiency of 78.9%.
+
+**Recommendations:**
+1. Review packaging equipment calibration
+2. Check for material supply delays
+3. Consider adding a second packaging line during peak hours
+```
+
+### Screenshots
+
+> *Add screenshots of the chat interface here*
+
+```
+┌─────────────────────────────────────────────────────┐
+│  🏭 Production Line Agent            [🌙/☀️ Toggle] │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  [User Message]                                     │
+│  What is the OEE for station ST001?                │
+│                                                     │
+│  [Agent Response]                                   │
+│  ▼ Validating input...                             │
+│  ▼ Understanding intent...                         │
+│  ▼ Planning tools: calculate_oee                   │
+│  ▼ Executing tools...                              │
+│                                                     │
+│  The OEE for Station ST001 is **85.2%**            │
+│  - Availability: 92%                               │
+│  - Performance: 95%                                │
+│  - Quality: 97.5%                                  │
+│                                                     │
+├─────────────────────────────────────────────────────┤
+│  [💬 Ask about production...]              [Send]  │
+│                                                     │
+│  [Show OEE] [Find Bottleneck] [Recent Alarms]      │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Roadmap
+
+### Planned Features
+
+- [ ] **Multi-model support** - Add Claude, Gemini options
+- [ ] **WebSocket streaming** - Alternative to SSE
+- [ ] **Authentication** - JWT-based user sessions
+- [ ] **Rate limiting** - Per-user request throttling
+- [ ] **Caching** - Redis cache for repeated queries
+- [ ] **Historical data** - Time-series queries and trends
+- [ ] **Alerting** - Proactive notifications for anomalies
+- [ ] **Dashboard** - Visual analytics for production metrics
+
+### Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0.0 | Dec 2024 | Initial release with 6-phase agent |
+| 0.9.0 | Nov 2024 | Added LangSmith integration |
+| 0.8.0 | Oct 2024 | SSE streaming implementation |
+
+---
+
+## Acknowledgments
+
+Built with these excellent open-source projects:
+
+- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent state machine
+- [LangSmith](https://smith.langchain.com) - Observability & prompt management
+- [FastAPI](https://fastapi.tiangolo.com) - Python web framework
+- [Next.js](https://nextjs.org) - React framework
+- [Material UI](https://mui.com) - React component library
+- [MCP](https://modelcontextprotocol.io) - Model Context Protocol
+- [OpenAI](https://openai.com) - GPT-4o language model
 
 ---
 
