@@ -12,8 +12,11 @@ from backend.agent.prompts import (
     build_input_validation_prompt,
     build_understanding_prompt,
     build_planning_prompt,
+    build_react_reasoning_prompt,
+    format_react_scratchpad,
+    parse_react_response,
 )
-from .state import AgentState, ValidationStatus
+from .state import AgentState, ValidationStatus, ReActStep
 from backend.mcp_client.validation import validate_tool_args
 
 if TYPE_CHECKING:
@@ -271,7 +274,245 @@ def build_agent_graph(agent: "ProductionAgent"):
         return state
 
     # =========================================================================
-    # Phase 4: Execution
+    # Phase 4A: ReAct (Reasoning + Action) Loop
+    # =========================================================================
+    
+    def _get_tools_info() -> List[Dict[str, Any]]:
+        """Get tool information for ReAct prompt."""
+        mcp_tools = agent.tool_client.get_langchain_tools()
+        tools_info = []
+        for tool in mcp_tools:
+            tool_info = {
+                "name": tool.name,
+                "description": getattr(tool, "description", "No description"),
+                "args_schema": {}
+            }
+            # Try to get args schema if available
+            if hasattr(tool, "args_schema") and tool.args_schema:
+                try:
+                    schema = tool.args_schema.schema() if hasattr(tool.args_schema, "schema") else {}
+                    tool_info["args_schema"] = schema.get("properties", {})
+                except Exception:
+                    pass
+            tools_info.append(tool_info)
+        return tools_info
+    
+    async def react_reasoning(state: AgentState) -> AgentState:
+        """ReAct reasoning step: Think about what to do next."""
+        iteration = state.get("react_iteration", 0) + 1
+        max_iterations = state.get("react_max_iterations", 5)
+        
+        _record_step(state, "react_reasoning", f"ReAct iteration {iteration}/{max_iterations}")
+        
+        # Get tools info and format scratchpad
+        tools_info = _get_tools_info()
+        react_steps = state.get("react_steps", [])
+        scratchpad = format_react_scratchpad(react_steps)
+        
+        memory_context = agent._format_memory_context(state["thread_id"])
+        
+        # Get trace ID for tracing
+        trace_id = _get_trace_id(state)
+        
+        # Build and execute the reasoning prompt
+        with agent.observability.span(
+            f"react:reasoning:{iteration}",
+            trace_id=trace_id,
+            input_data={"iteration": iteration, "question": state["question"]},
+            metadata={"phase": "react_reasoning", "iteration": iteration},
+        ) as span:
+            messages = build_react_reasoning_prompt(
+                question=state["question"],
+                available_tools=tools_info,
+                scratchpad=scratchpad,
+                memory_context=memory_context
+            )
+            
+            response = await _safe_llm_call(messages, max_tokens=600)
+            parsed = parse_react_response(response)
+            
+            # Update span with parsed response
+            if span:
+                try:
+                    span.update_trace(output={
+                        "thought": parsed.get("thought", "")[:200],
+                        "action": parsed.get("action", ""),
+                        "parse_error": parsed.get("parse_error"),
+                    })
+                except Exception:
+                    pass
+        
+        # Create the ReAct step
+        react_step: ReActStep = {
+            "iteration": iteration,
+            "thought": parsed.get("thought", ""),
+            "action": parsed.get("action", ""),
+            "action_input": parsed.get("action_input", {}),
+            "observation": ""  # Will be filled by react_action
+        }
+        
+        # Update state
+        react_steps.append(react_step)
+        state["react_steps"] = react_steps
+        state["react_iteration"] = iteration
+        state["react_scratchpad"] = format_react_scratchpad(react_steps)
+        
+        thought_preview = parsed.get("thought", "")[:80]
+        action = parsed.get("action", "unknown")
+        _record_step(state, "react_reasoning", f"Thought: {thought_preview}... → Action: {action}")
+        
+        return state
+    
+    async def react_action(state: AgentState) -> AgentState:
+        """ReAct action step: Execute the chosen action and observe result."""
+        react_steps = state.get("react_steps", [])
+        if not react_steps:
+            _record_step(state, "react_action", "No action to execute")
+            return state
+        
+        current_step = react_steps[-1]
+        action = current_step.get("action", "").lower().strip()
+        action_input = current_step.get("action_input", {})
+        
+        # Check if action is "finish"
+        if action == "finish":
+            # Extract final answer from action_input
+            answer = action_input.get("answer", "") if isinstance(action_input, dict) else str(action_input)
+            current_step["observation"] = f"Final Answer: {answer}"
+            state["react_steps"] = react_steps
+            state["react_scratchpad"] = format_react_scratchpad(react_steps)
+            _record_step(state, "react_action", "Agent decided to finish")
+            return state
+        
+        # Get trace ID for tracing
+        trace_id = _get_trace_id(state)
+        iteration = state.get("react_iteration", 0)
+        
+        _record_step(state, "react_action", f"Executing tool: {action}")
+        
+        # Validate tool exists
+        mcp_tools = agent.tool_client.get_langchain_tools()
+        valid_tools = {t.name for t in mcp_tools}
+        
+        if action not in valid_tools:
+            observation = f"Error: Tool '{action}' not found. Available tools: {', '.join(valid_tools)}"
+            current_step["observation"] = observation
+            state["react_steps"] = react_steps
+            state["react_scratchpad"] = format_react_scratchpad(react_steps)
+            _record_step(state, "react_action", f"Tool not found: {action}")
+            return state
+        
+        # Validate arguments
+        validated_args, validation_error = validate_tool_args(
+            action, action_input if isinstance(action_input, dict) else {}
+        )
+        
+        if validation_error:
+            observation = f"Error: Invalid arguments for {action}: {validation_error}"
+            current_step["observation"] = observation
+            state["react_steps"] = react_steps
+            state["react_scratchpad"] = format_react_scratchpad(react_steps)
+            _record_step(state, "react_action", f"Invalid arguments: {validation_error}")
+            return state
+        
+        # Execute the tool with tracing
+        with agent.observability.span(
+            f"react:action:{action}:{iteration}",
+            trace_id=trace_id,
+            input_data={"tool": action, "args": validated_args or {}},
+            metadata={"phase": "react_action", "iteration": iteration, "tool_name": action},
+        ) as span:
+            result = await _safe_tool_call(state, action, validated_args or {})
+            
+            # Update span with result
+            if span:
+                try:
+                    span.update_trace(output={
+                        "success": result.get("success", False),
+                        "execution_time_ms": result.get("execution_time_ms", 0),
+                        "error": result.get("error", ""),
+                    })
+                except Exception:
+                    pass
+        
+        # Format observation
+        if result["success"]:
+            data = result.get("data")
+            if isinstance(data, dict):
+                observation = json.dumps(data, indent=2)
+            elif isinstance(data, list):
+                observation = json.dumps(data, indent=2)
+            else:
+                observation = str(data)
+            
+            # Store in legacy data structure for synthesis
+            legacy_data = _safe_dict(state.get("data"))
+            legacy_data.setdefault("tools", {})[action] = data
+            
+            # Also store in standard locations
+            if action == "get_production_metrics":
+                legacy_data["metrics"] = data
+            elif action == "find_bottleneck":
+                legacy_data["bottleneck"] = data
+            elif action == "calculate_oee":
+                legacy_data["oee"] = data
+            
+            state["data"] = legacy_data
+            
+            # Update tool_results for compatibility
+            tool_results = _safe_dict(state.get("tool_results"))
+            tool_results[action] = result
+            state["tool_results"] = tool_results
+            
+            observations = _safe_list(state.get("observations"))
+            observations.append(f"{action}: Retrieved successfully")
+            state["observations"] = observations
+            
+            _record_step(state, "react_action", f"Tool {action} executed successfully", [action])
+        else:
+            observation = f"Error: {result.get('error', 'Unknown error')}"
+            
+            # Store error
+            legacy_data = _safe_dict(state.get("data"))
+            errors = legacy_data.setdefault("tool_errors", [])
+            errors.append({"tool": action, "error": result["error"]})
+            state["data"] = legacy_data
+            
+            observations = _safe_list(state.get("observations"))
+            observations.append(f"{action}: Error - {result['error']}")
+            state["observations"] = observations
+            
+            _record_step(state, "react_action", f"Tool {action} failed: {result['error']}")
+        
+        # Update the step with observation
+        current_step["observation"] = observation
+        state["react_steps"] = react_steps
+        state["react_scratchpad"] = format_react_scratchpad(react_steps)
+        
+        return state
+    
+    def should_continue_react(state: AgentState) -> str:
+        """Determine if we should continue the ReAct loop."""
+        react_steps = state.get("react_steps", [])
+        iteration = state.get("react_iteration", 0)
+        max_iterations = state.get("react_max_iterations", 5)
+        
+        # Check if we've reached max iterations
+        if iteration >= max_iterations:
+            return "validate_output"
+        
+        # Check if the last action was "finish"
+        if react_steps:
+            last_step = react_steps[-1]
+            action = last_step.get("action", "").lower().strip()
+            if action == "finish":
+                return "validate_output"
+        
+        # Continue the loop
+        return "react_reasoning"
+
+    # =========================================================================
+    # Phase 4B: Legacy Execution (for non-ReAct mode)
     # =========================================================================
     
     async def execute_plan(state: AgentState) -> AgentState:
@@ -364,8 +605,11 @@ def build_agent_graph(agent: "ProductionAgent"):
     async def validate_output(state: AgentState) -> AgentState:
         """Validate tool results before synthesis."""
         tool_plan = _safe_list(state.get("tool_plan"))
+        react_steps = _safe_list(state.get("react_steps"))
+        tool_results = _safe_dict(state.get("tool_results"))
         
-        if not tool_plan:
+        # If no tool plan and no react steps (direct response path)
+        if not tool_plan and not react_steps:
             state["output_validation"] = {
                 "is_complete": True,
                 "is_accurate": True,
@@ -378,8 +622,47 @@ def build_agent_graph(agent: "ProductionAgent"):
         
         _record_step(state, "output_validation", "Validating results")
         
-        tool_results = _safe_dict(state.get("tool_results"))
+        # For ReAct mode, validate based on react_steps
+        if react_steps:
+            successful_actions = sum(
+                1 for step in react_steps 
+                if step.get("observation") and not step.get("observation", "").startswith("Error:")
+            )
+            total_actions = sum(1 for step in react_steps if step.get("action") != "finish")
+            
+            # Check if agent finished properly
+            finished = any(step.get("action", "").lower() == "finish" for step in react_steps)
+            
+            warnings = []
+            missing_info = []
+            
+            for step in react_steps:
+                obs = step.get("observation", "")
+                if obs.startswith("Error:"):
+                    missing_info.append(obs)
+            
+            confidence = successful_actions / max(total_actions, 1) if total_actions > 0 else 1.0
+            if not finished:
+                warnings.append("Agent reached max iterations without finishing")
+                confidence *= 0.8
+            
+            state["output_validation"] = {
+                "is_complete": len(missing_info) == 0 and finished,
+                "is_accurate": True,
+                "is_safe": True,
+                "confidence": confidence,
+                "missing_info": missing_info,
+                "warnings": warnings
+            }
+            
+            if missing_info:
+                _record_step(state, "output_validation", f"Partial data ({successful_actions}/{total_actions} actions)")
+            else:
+                _record_step(state, "output_validation", f"ReAct completed ({len(react_steps)} steps)")
+            
+            return state
         
+        # Legacy tool plan validation
         successful_tools = sum(1 for r in tool_results.values() if _safe_dict(r).get("success", False))
         total_tools = len(tool_results)
         
@@ -434,25 +717,40 @@ def build_agent_graph(agent: "ProductionAgent"):
         return "understand_intent"
 
     def should_execute_tools(state: AgentState) -> str:
-        """Determine if we need to execute tools."""
+        """Determine if we need to execute tools or use ReAct."""
+        react_enabled = state.get("react_enabled", True)
+        intent = _safe_dict(state.get("intent"))
+        requires_live_data = intent.get("requires_live_data", False)
+        
+        # If ReAct is enabled and we need live data, use ReAct loop
+        if react_enabled and requires_live_data:
+            return "react_reasoning"
+        
+        # Legacy path: use tool plan
         tool_plan = _safe_list(state.get("tool_plan"))
         if tool_plan:
             return "execute_plan"
+        
         return "finalize"
 
     # =========================================================================
     # Build Graph
     # =========================================================================
     
+    # Add all nodes
     graph.add_node("validate_input", validate_input)
     graph.add_node("understand_intent", understand_intent)
     graph.add_node("create_plan", create_plan)
-    graph.add_node("execute_plan", execute_plan)
+    graph.add_node("react_reasoning", react_reasoning)  # ReAct reasoning node
+    graph.add_node("react_action", react_action)  # ReAct action node
+    graph.add_node("execute_plan", execute_plan)  # Legacy execution
     graph.add_node("validate_output", validate_output)
     graph.add_node("finalize", finalize)
     
+    # Set entry point
     graph.set_entry_point("validate_input")
     
+    # Input validation routing
     graph.add_conditional_edges(
         "validate_input",
         should_continue_after_validation,
@@ -462,19 +760,40 @@ def build_agent_graph(agent: "ProductionAgent"):
         }
     )
     
+    # Understanding leads to planning
     graph.add_edge("understand_intent", "create_plan")
     
+    # Planning routes to either ReAct, legacy execution, or finalize
     graph.add_conditional_edges(
         "create_plan",
         should_execute_tools,
         {
-            "execute_plan": "execute_plan",
-            "finalize": "finalize"
+            "react_reasoning": "react_reasoning",  # ReAct path
+            "execute_plan": "execute_plan",  # Legacy path
+            "finalize": "finalize"  # Direct response path
         }
     )
     
+    # ReAct loop: reasoning → action → (continue or validate_output)
+    graph.add_edge("react_reasoning", "react_action")
+    
+    # After ReAct action, decide whether to continue loop or finish
+    graph.add_conditional_edges(
+        "react_action",
+        should_continue_react,
+        {
+            "react_reasoning": "react_reasoning",  # Continue loop
+            "validate_output": "validate_output"  # Exit loop
+        }
+    )
+    
+    # Legacy execution path
     graph.add_edge("execute_plan", "validate_output")
+    
+    # Output validation leads to finalize
     graph.add_edge("validate_output", "finalize")
+    
+    # Finalize ends the graph
     graph.add_edge("finalize", END)
     
     return graph.compile()

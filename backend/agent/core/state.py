@@ -49,6 +49,15 @@ class ToolResult(TypedDict, total=False):
     execution_time_ms: float
 
 
+class ReActStep(TypedDict, total=False):
+    """A single step in the ReAct (Reasoning + Action) loop."""
+    iteration: int
+    thought: str  # The agent's reasoning about what to do
+    action: str  # The action/tool to take (or "finish")
+    action_input: Dict[str, Any]  # Arguments for the tool
+    observation: str  # Result from the action
+
+
 class OutputValidation(TypedDict, total=False):
     """Result of output validation phase."""
     is_complete: bool
@@ -85,6 +94,13 @@ class AgentState(TypedDict, total=False):
     # Phase 6: Synthesis
     final_response: str
     
+    # ReAct (Reasoning + Action) Loop
+    react_enabled: bool  # Whether to use ReAct loop
+    react_steps: List[ReActStep]  # History of Thought/Action/Observation
+    react_iteration: int  # Current iteration count
+    react_max_iterations: int  # Maximum iterations allowed
+    react_scratchpad: str  # Formatted scratchpad for LLM context
+    
     # Metadata
     steps: List[str]
     timeline: List[Dict[str, Any]]
@@ -93,8 +109,20 @@ class AgentState(TypedDict, total=False):
     error: str
 
 
-def create_initial_state(question: str, thread_id: str | None = None) -> AgentState:
-    """Build the initial agent state for a run/stream cycle."""
+def create_initial_state(
+    question: str,
+    thread_id: str | None = None,
+    react_enabled: bool = True,
+    react_max_iterations: int = 5
+) -> AgentState:
+    """Build the initial agent state for a run/stream cycle.
+    
+    Args:
+        question: The user's question/query.
+        thread_id: Optional thread ID for conversation continuity.
+        react_enabled: Whether to use ReAct (Reasoning + Action) loop.
+        react_max_iterations: Maximum ReAct iterations to prevent infinite loops.
+    """
     import time
     import random
     import string
@@ -114,6 +142,13 @@ def create_initial_state(question: str, thread_id: str | None = None) -> AgentSt
         "observations": [],
         "output_validation": {},
         "final_response": "",
+        # ReAct fields
+        "react_enabled": react_enabled,
+        "react_steps": [],
+        "react_iteration": 0,
+        "react_max_iterations": react_max_iterations,
+        "react_scratchpad": "",
+        # Metadata
         "steps": [],
         "timeline": [],
         "data": {},

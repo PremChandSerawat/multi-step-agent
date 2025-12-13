@@ -26,6 +26,7 @@ An intelligent AI assistant for manufacturing operations, built with a **LangGra
 - [Repository Structure](#repository-structure)
 - [Quick Start](#quick-start)
 - [Agent Workflow](#agent-workflow)
+- [ReAct Pattern](#react-pattern)
 - [API Reference](#api-reference)
 - [MCP Tools](#mcp-tools)
 - [Frontend](#frontend)
@@ -49,9 +50,16 @@ The Production Line Agent is designed to answer questions about manufacturing op
 1. **Validating** user input for safety, clarity, and relevance
 2. **Understanding** intent and extracting entities (stations, products, metrics)
 3. **Planning** which tools to call based on the query
-4. **Executing** MCP tools against a production simulator
+4. **Executing** MCP tools using **ReAct (Reasoning + Action)** pattern
 5. **Validating** outputs for completeness and accuracy
 6. **Synthesizing** a natural language response streamed to the client
+
+The agent implements the **ReAct pattern** where it iteratively:
+- **Thinks** about what information it needs
+- **Acts** by calling appropriate tools
+- **Observes** the results and decides next steps
+
+This enables dynamic, multi-step reasoning where the agent adapts its approach based on intermediate results.
 
 The system uses a **mock production simulator** that generates realistic manufacturing data including stations, production runs, alarms, OEE metrics, and energy consumption.
 
@@ -136,37 +144,62 @@ backend/agent/
 
 ### LangGraph State Machine
 
-The agent uses a **6-phase state machine** built with LangGraph:
+The agent uses a **6-phase state machine** built with LangGraph, with an optional **ReAct loop** for dynamic reasoning:
 
 ```
                      ┌────────────────────────────────────────────────────┐
                      │                   AgentState                       │
-                     │  question, thread_id, intent, tool_plan,           │
+                     │  question, thread_id, intent, react_steps,         │
                      │  tool_results, observations, timeline, data        │
                      └────────────────────────────────────────────────────┘
                                           │
                                           ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                                                              │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │
-│   │   Phase 1   │    │   Phase 2   │    │   Phase 3   │    │   Phase 4   │   │
-│   │  VALIDATE   │───▶│ UNDERSTAND  │───▶│    PLAN     │───▶│   EXECUTE   │   │
-│   │   INPUT     │    │   INTENT    │    │   TOOLS     │    │    TOOLS    │   │
-│   └─────────────┘    └─────────────┘    └─────────────┘    └──────┬──────┘   │
-│         │                                                         │          │
-│         │ invalid/                                                ▼          │
-│         │ off-topic    ┌─────────────┐    ┌─────────────┐   ┌──────────┐     │
-│         └─────────────▶│   Phase 6   │◀───│   Phase 5   │◀──│ MCP Tool │     │
-│                        │  FINALIZE   │    │  VALIDATE   │   │  Client  │     │
-│                        │             │    │   OUTPUT    │   └──────────┘     │
-│                        └──────┬──────┘    └─────────────┘                    │
-│                               │                                              │
-└───────────────────────────────┼──────────────────────────────────────────────┘
-                                ▼
-                    ┌─────────────────────┐
-                    │  OpenAI Synthesis   │
-                    │  (Streaming SSE)    │
-                    └─────────────────────┘
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                      │
+│   │   Phase 1   │    │   Phase 2   │    │   Phase 3   │                      │
+│   │  VALIDATE   │───▶│ UNDERSTAND  │───▶│    PLAN     │                      │
+│   │   INPUT     │    │   INTENT    │    │   TOOLS     │                      │
+│   └─────────────┘    └─────────────┘    └──────┬──────┘                      │
+│         │                                      │                             │
+│         │ invalid/                 ┌───────────┴───────────┐                 │
+│         │ off-topic                ▼                       ▼                 │
+│         │              ┌─────────────────────┐   ┌─────────────────┐         │
+│         │              │   ReAct Loop (4A)   │   │ Legacy Execute  │         │
+│         │              │  ┌───────────────┐  │   │     (4B)        │         │
+│         │              │  │    THOUGHT    │  │   └────────┬────────┘         │
+│         │              │  │   (Reason)    │  │            │                  │
+│         │              │  └───────┬───────┘  │            │                  │
+│         │              │          ▼          │            │                  │
+│         │              │  ┌───────────────┐  │            │                  │
+│         │              │  │    ACTION     │  │            │                  │
+│         │              │  │ (Tool Call)   │  │            │                  │
+│         │              │  └───────┬───────┘  │            │                  │
+│         │              │          ▼          │            │                  │
+│         │              │  ┌───────────────┐  │            │                  │
+│         │              │  │  OBSERVATION  │──┼──┐         │                  │
+│         │              │  │   (Result)    │  │  │ loop    │                  │
+│         │              │  └───────────────┘  │  │         │                  │
+│         │              │          │          │  │         │                  │
+│         │              │          └──────────┼──┘         │                  │
+│         │              │        (until done) │            │                  │
+│         │              └──────────┬──────────┘            │                  │
+│         │                         │                       │                  │
+│         │                         ▼                       ▼                  │
+│         │              ┌─────────────────────────────────────┐               │
+│         │              │           Phase 5: VALIDATE         │               │
+│         │              │              OUTPUT                 │               │
+│         └─────────────▶└──────────────────┬──────────────────┘               │
+│                                           ▼                                  │
+│                        ┌─────────────────────────────────────┐               │
+│                        │         Phase 6: FINALIZE           │               │
+│                        └──────────────────┬──────────────────┘               │
+└───────────────────────────────────────────┼──────────────────────────────────┘
+                                            ▼
+                              ┌─────────────────────┐
+                              │  OpenAI Synthesis   │
+                              │  (Streaming SSE)    │
+                              └─────────────────────┘
 ```
 
 #### Phase Details
@@ -176,7 +209,8 @@ The agent uses a **6-phase state machine** built with LangGraph:
 | 1. Validate   | `input-validation-system`  | `InputValidation`       | Safety, clarity, relevance checks |
 | 2. Understand | `understanding-system`     | `IntentAnalysis`        | Intent, entities, constraints     |
 | 3. Plan       | `planning-system`          | `List[ToolPlanItem]`    | Tool selection & sequencing       |
-| 4. Execute    | -                            | `Dict[str, ToolResult]` | MCP tool calls (30s timeout)      |
+| 4A. ReAct     | `react-reasoning-prompt`   | `List[ReActStep]`       | Iterative Thought→Action→Observe  |
+| 4B. Execute   | -                            | `Dict[str, ToolResult]` | Legacy sequential execution       |
 | 5. Validate   | `output-validation-system` | `OutputValidation`      | Completeness, accuracy, safety    |
 | 6. Finalize   | `synthesis-*-system`       | `final_response`        | Natural language response         |
 
@@ -204,6 +238,13 @@ class AgentState(TypedDict):
     tool_results: Dict[str, ToolResult]  # {tool_name: {success, data, error}}
     observations: List[str]  # Human-readable observations
   
+    # ReAct (Reasoning + Action) Loop
+    react_enabled: bool  # Whether to use ReAct loop (default: True)
+    react_steps: List[ReActStep]  # [{iteration, thought, action, action_input, observation}]
+    react_iteration: int  # Current iteration count
+    react_max_iterations: int  # Maximum iterations (default: 5)
+    react_scratchpad: str  # Formatted history for LLM context
+  
     # Phase 5: Output Validation
     output_validation: OutputValidation  # {is_complete, confidence, warnings}
   
@@ -211,6 +252,15 @@ class AgentState(TypedDict):
     steps: List[str]  # Timeline of steps
     timeline: List[Dict]  # Detailed phase events
     data: Dict[str, Any]  # Additional data storage
+
+
+class ReActStep(TypedDict):
+    """A single step in the ReAct loop."""
+    iteration: int
+    thought: str       # Agent's reasoning about what to do
+    action: str        # Tool name or "finish"
+    action_input: Dict # Arguments for the tool
+    observation: str   # Result from the action
 ```
 
 ---
@@ -472,14 +522,20 @@ Selects and sequences tools:
 - Validates tool names against MCP server
 - Creates execution order (sequential or parallel)
 
-### Phase 4: Execution
+### Phase 4: Execution (ReAct Loop)
 
-Runs tools with:
+Uses the **ReAct pattern** for dynamic tool execution:
 
-- Argument validation
+- **Thought**: Agent reasons about what information it needs
+- **Action**: Calls the appropriate MCP tool
+- **Observation**: Receives and analyzes the result
+- **Loop**: Repeats until agent decides to finish (max 5 iterations)
+
+Features:
+- Dynamic tool selection based on intermediate results
+- Argument validation per tool call
 - 30-second timeout per tool
-- Error handling and retries
-- Result collection in state
+- Full reasoning trace captured in state
 
 ### Phase 5: Output Validation
 
@@ -496,6 +552,108 @@ Generates response:
 - Combines tool outputs
 - Streams answer via OpenAI
 - Includes actionable recommendations
+
+---
+
+## ReAct Pattern
+
+The agent implements the **ReAct (Reasoning + Action)** pattern, introduced in the paper ["ReAct: Synergizing Reasoning and Acting in Language Models"](https://arxiv.org/abs/2210.03629). This enables dynamic, multi-step problem solving.
+
+### How ReAct Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     ReAct Loop                                  │
+│                                                                 │
+│   User Question: "What's causing the bottleneck?"               │
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │ Iteration 1                                             │   │
+│   │ Thought: I need to get all station metrics first        │   │
+│   │ Action: get_production_metrics                          │   │
+│   │ Action Input: {}                                        │   │
+│   │ Observation: {stations: [...], efficiency: [...]}       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                           │                                     │
+│                           ▼                                     │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │ Iteration 2                                             │   │
+│   │ Thought: ST004 has lowest efficiency, let me analyze    │   │
+│   │ Action: find_bottleneck                                 │   │
+│   │ Action Input: {"stations": ["ST001", "ST004", "ST005"]} │   │
+│   │ Observation: {bottleneck: "ST004", reason: "..."}       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                           │                                     │
+│                           ▼                                     │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │ Iteration 3                                             │   │
+│   │ Thought: I have enough information to answer            │   │
+│   │ Action: finish                                          │   │
+│   │ Action Input: {"answer": "ST004 is the bottleneck..."}  │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Dynamic Tool Selection** | Agent decides which tools to use based on observations |
+| **Iterative Refinement** | Can call multiple tools in sequence based on results |
+| **Explicit Reasoning** | Each step includes the agent's thought process |
+| **Self-Termination** | Agent decides when it has enough information |
+| **Max Iterations** | Prevents infinite loops (default: 5 iterations) |
+| **Full Tracing** | Each step is traced in LangSmith |
+
+### ReAct vs Legacy Execution
+
+| Aspect | ReAct (Default) | Legacy |
+|--------|-----------------|--------|
+| Tool selection | Dynamic per iteration | Planned upfront |
+| Reasoning | Explicit thoughts | Implicit |
+| Adaptability | Adapts based on results | Fixed plan |
+| Use case | Complex queries | Simple queries |
+
+### Configuration
+
+```python
+from backend.agent.core.state import create_initial_state
+
+# Enable ReAct (default)
+state = create_initial_state(
+    question="What's causing low efficiency?",
+    react_enabled=True,        # Use ReAct loop
+    react_max_iterations=5     # Max iterations before forcing finish
+)
+
+# Disable ReAct for legacy behavior
+state = create_initial_state(
+    question="Show all stations",
+    react_enabled=False        # Use legacy planning + execution
+)
+```
+
+### Example ReAct Trace
+
+```
+[react_reasoning] ReAct iteration 1/5
+[react_reasoning] Thought: I need to check the current production metrics... → Action: get_production_metrics
+[react_action] Executing tool: get_production_metrics
+[react_action] Tool get_production_metrics executed successfully
+
+[react_reasoning] ReAct iteration 2/5
+[react_reasoning] Thought: I see ST004 has 78% efficiency. Let me find the bottleneck... → Action: find_bottleneck
+[react_action] Executing tool: find_bottleneck
+[react_action] Tool find_bottleneck executed successfully
+
+[react_reasoning] ReAct iteration 3/5
+[react_reasoning] Thought: I now have all the information needed... → Action: finish
+[react_action] Agent decided to finish
+
+[output_validation] ReAct completed (3 steps)
+[synthesis] Preparing response
+```
 
 ---
 
@@ -1106,6 +1264,7 @@ bottleneck with the lowest throughput efficiency of 78.9%.
 
 ### Planned Features
 
+- [x] **ReAct Pattern** - Reasoning + Action loop for dynamic tool execution
 - [ ] **Multi-model support** - Add Claude, Gemini options
 - [ ] **WebSocket streaming** - Alternative to SSE
 - [ ] **Authentication** - JWT-based user sessions
@@ -1119,6 +1278,7 @@ bottleneck with the lowest throughput efficiency of 78.9%.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1.0 | Dec 2024 | Added ReAct (Reasoning + Action) pattern |
 | 1.0.0 | Dec 2024 | Initial release with 6-phase agent |
 | 0.9.0 | Nov 2024 | Added LangSmith integration |
 | 0.8.0 | Oct 2024 | SSE streaming implementation |
@@ -1136,6 +1296,10 @@ Built with these excellent open-source projects:
 - [Material UI](https://mui.com) - React component library
 - [MCP](https://modelcontextprotocol.io) - Model Context Protocol
 - [OpenAI](https://openai.com) - GPT-4o language model
+
+Inspired by:
+
+- [ReAct Paper](https://arxiv.org/abs/2210.03629) - "ReAct: Synergizing Reasoning and Acting in Language Models" (Yao et al., 2022)
 
 ---
 
