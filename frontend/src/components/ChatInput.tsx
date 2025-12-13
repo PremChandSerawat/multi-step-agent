@@ -53,7 +53,6 @@ export function ChatInput({
         pb: 1.5,
         borderTop: hasMessages ? "1px solid" : "none",
         borderColor: "divider",
-        boxShadow: hasMessages ? "0 -8px 24px rgba(0, 0, 0, 0.15)" : "none",
       }}
     >
       <Box

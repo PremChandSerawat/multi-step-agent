@@ -16,3 +16,4 @@ async def health() -> HealthResponse:
     """Return the health status of the API."""
     return HealthResponse(status="ok", version="0.1.0")
 
+

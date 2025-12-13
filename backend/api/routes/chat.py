@@ -110,3 +110,4 @@ async def chat_sync(payload: ChatRequest = Body(...)):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}")
 
+
